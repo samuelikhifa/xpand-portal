@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useServerFn } from "@tanstack/react-start";
 import { AdminShell } from "@/components/AdminShell";
 import { Button } from "@/components/ui/button";
@@ -126,7 +126,7 @@ function QuestionBank() {
         return;
       }
 
-      const result = await uploadQuestionsFn({ data: { questions: questionsToInsert } });
+      const result = await uploadQuestionsFn({ questions: questionsToInsert });
       toast.success(`Uploaded ${result.count} questions`);
       loadQuestions();
     } catch (err) {
@@ -140,7 +140,7 @@ function QuestionBank() {
   async function deleteQuestion(id: string) {
     setDeleting(id);
     try {
-      await deleteQuestionFn({ data: { id } });
+      await deleteQuestionFn({ id });
       toast.success("Question deleted");
       loadQuestions();
     } catch (error) {
@@ -229,66 +229,62 @@ function QuestionBank() {
 function ScheduleExam() {
   const [exams, setExams] = useState<Exam[]>([]);
   const [loading, setLoading] = useState(true);
-  const [creating, setCreating] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [title, setTitle] = useState("");
   const [startTime, setStartTime] = useState("");
   const [endTime, setEndTime] = useState("");
   const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [newExamId, setNewExamId] = useState<string | null>(null);
+  const [showSuccessDialog, setShowSuccessDialog] = useState(false);
   const listExamsFn = useServerFn(listExams);
   const createExamFn = useServerFn(createExam);
 
   async function loadExams() {
     setLoading(true);
     try {
-      const result = await listExamsFn();
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("Request timeout")), 5000)
+      );
+      const result = await Promise.race([listExamsFn(), timeoutPromise]) as { exams: Exam[] };
       setExams(result.exams ?? []);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to load exams");
+      setExams([]);
     }
     setLoading(false);
   }
 
   useEffect(() => { loadExams(); }, []);
 
-  async function createExam() {
-    if (!title || !startTime || !endTime) {
-      toast.error("Please fill all fields");
-      return;
-    }
-
-    const start = new Date(startTime);
-    const end = new Date(endTime);
-    const diffHours = (end.getTime() - start.getTime()) / (1000 * 60 * 60);
-
-    if (diffHours > 3) {
-      toast.error("Exam window cannot exceed 3 hours");
-      return;
-    }
-
-    if (end <= start) {
-      toast.error("End time must be after start time");
-      return;
-    }
-
-    setCreating(true);
+  const handleScheduleExam = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (isSubmitting) return;
+    setIsSubmitting(true);
     try {
-      await createExamFn({ data: { title, start_time: startTime, end_time: endTime } });
+      await createExamFn({ title, start_time: startTime, end_time: endTime });
       toast.success("Exam created");
+      await loadExams();
+      // Get the most recent exam (the one just created)
+      const latestExam = exams[0];
+      if (latestExam) {
+        setNewExamId(latestExam.id);
+        setShowSuccessDialog(true);
+      }
       setShowCreateDialog(false);
       setTitle("");
       setStartTime("");
       setEndTime("");
-      loadExams();
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to create exam");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to create exam");
+    } finally {
+      setIsSubmitting(false);
     }
-    setCreating(false);
-  }
+  };
 
   function copyExamLink(examId: string) {
-    const url = `${window.location.origin}/exam/${examId}`;
+    const url = `https://xpand-portal.qual9189.workers.dev/exam/${examId}`;
     navigator.clipboard.writeText(url);
-    toast.success("Link copied to clipboard");
+    toast.success("Link copied!");
   }
 
   function getExamStatus(exam: Exam) {
@@ -357,23 +353,73 @@ function ScheduleExam() {
           <DialogHeader>
             <DialogTitle>Schedule New Exam</DialogTitle>
           </DialogHeader>
+          <form onSubmit={handleScheduleExam} className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="exam-title">Exam Title</Label>
+              <Input 
+                id="exam-title"
+                value={title} 
+                onChange={(e) => setTitle(e.target.value)} 
+                placeholder="e.g., JavaScript Assessment" 
+                disabled={isSubmitting}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="start-time">Start Time</Label>
+              <Input 
+                id="start-time"
+                type="datetime-local" 
+                value={startTime} 
+                onChange={(e) => setStartTime(e.target.value)} 
+                disabled={isSubmitting}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="end-time">End Time (max 3 hours after start)</Label>
+              <Input 
+                id="end-time"
+                type="datetime-local" 
+                value={endTime} 
+                onChange={(e) => setEndTime(e.target.value)} 
+                disabled={isSubmitting}
+              />
+            </div>
+            <DialogFooter>
+              <Button 
+                type="button" 
+                variant="outline" 
+                onClick={() => setShowCreateDialog(false)} 
+                disabled={isSubmitting}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={isSubmitting}>{isSubmitting ? "Creating..." : "Schedule Exam"}</Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showSuccessDialog} onOpenChange={setShowSuccessDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Exam Created Successfully</DialogTitle>
+          </DialogHeader>
           <div className="space-y-4">
-            <div className="space-y-2">
-              <Label>Exam Title</Label>
-              <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="e.g., JavaScript Assessment" />
-            </div>
-            <div className="space-y-2">
-              <Label>Start Time</Label>
-              <Input type="datetime-local" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
-            </div>
-            <div className="space-y-2">
-              <Label>End Time (max 3 hours after start)</Label>
-              <Input type="datetime-local" value={endTime} onChange={(e) => setEndTime(e.target.value)} />
+            <p className="text-sm text-muted-foreground">Share this link with participants:</p>
+            <div className="flex gap-2">
+              <Input 
+                value={`https://xpand-portal.qual9189.workers.dev/exam/${newExamId}`} 
+                readOnly 
+                className="flex-1"
+              />
+              <Button onClick={() => newExamId && copyExamLink(newExamId)}>
+                <Copy className="h-4 w-4 mr-2" />
+                Copy
+              </Button>
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setShowCreateDialog(false)}>Cancel</Button>
-            <Button onClick={createExam} disabled={creating}>{creating ? "Creating..." : "Create Exam"}</Button>
+            <Button onClick={() => setShowSuccessDialog(false)}>Done</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
